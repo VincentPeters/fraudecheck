@@ -415,14 +415,26 @@ def dolos_scores(code_files, keep_dir=None):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(keep_dir, "dolos" + ext.replace(".", "-")) if keep_dir else os.path.join(d, "out")
             shutil.rmtree(out, ignore_errors=True)
-            subprocess.run([dolos, "run", "-f", "csv", "-o", out, *files], capture_output=True, stdin=subprocess.DEVNULL)
+            # file list as CSV (on Windows dolos is a .cmd and cmd.exe stops at 8191 characters);
+            # Dolos only reads paths relative to the CSV, so the files are copied next to it
+            src = {}
+            for i, p in enumerate(files):
+                name = f"{i}_{os.path.basename(p)}"
+                shutil.copy(p, os.path.join(d, name))
+                src[name] = p
+            info = os.path.join(d, "info.csv")
+            with open(info, "w", encoding="utf-8", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(["filename", "full_name", "label"])
+                w.writerows([n, n, owner[p]] for n, p in src.items())
+            subprocess.run([dolos, "run", "-f", "csv", "-o", out, info], capture_output=True, stdin=subprocess.DEVNULL)
             csv_path = os.path.join(out, "pairs.csv")
             if not os.path.exists(csv_path):
                 log(f"  Dolos produced no result for {ext}, skipped")
                 continue
             for row in csv.DictReader(open(csv_path, encoding="utf-8")):
-                fa = os.path.normcase(os.path.abspath(row["leftFilePath"]))
-                fb = os.path.normcase(os.path.abspath(row["rightFilePath"]))
+                fa = src.get(os.path.basename(row["leftFilePath"]))
+                fb = src.get(os.path.basename(row["rightFilePath"]))
                 a, b = owner.get(fa), owner.get(fb)
                 if not a or not b or a == b:
                     continue
@@ -430,7 +442,7 @@ def dolos_scores(code_files, keep_dir=None):
                 per_file[(fa, b)] = max(per_file[(fa, b)], sim)
                 per_file[(fb, a)] = max(per_file[(fb, a)], sim)
                 if sim > best.get(key, (0,))[0]:
-                    best[key] = (sim, os.path.basename(row["leftFilePath"]), os.path.basename(row["rightFilePath"]))
+                    best[key] = (sim, os.path.basename(fa), os.path.basename(fb))
     out = {}
     for key, (_, f1, f2) in best.items():
         a, b = tuple(key)
@@ -549,9 +561,43 @@ def paraphrases(data, current, common_min, shared):
 
 # ---------- analysis ----------
 
-def load_student(s, files, tmpl, ignore, use_ocr):
+def nodered_flow(path):
+    """Node-RED export -> list of nodes; None for other (or empty) JSON."""
+    try:
+        nodes = json.load(open(path, encoding="utf-8-sig"))
+    except (ValueError, OSError):
+        return None
+    if isinstance(nodes, list) and nodes and all(isinstance(n, dict) and "id" in n and "type" in n for n in nodes):
+        return nodes
+    return None
+
+def handmade_ids(ids):
+    """Node-RED makes random ids (16 hex, older 8.6 hex): readable or sequential ids
+    (a5f1000000000001, ...02) mean the JSON was written or generated, not exported."""
+    hexes = sorted(int(i, 16) for i in ids if re.fullmatch(r"[0-9a-f]{16}", i))
+    odd = sum(not re.fullmatch(r"[0-9a-f]{16}|[0-9a-f]{8}\.[0-9a-f]{4,6}", i) for i in ids)
+    return odd > len(ids) / 2 or sum(b - a < 1000 for a, b in zip(hexes, hexes[1:])) >= 3
+
+def load_student(s, files, tmpl, ignore, use_ocr, code_dir):
     text, imgs, meta, links = "", [], {}, []
+    code = [f for f in files if os.path.splitext(f)[1].lower() in CODE_EXT]
+    ids, funcs = set(), {}
     for f in files:
+        nodes = nodered_flow(f) if f.lower().endswith(".json") else None
+        if nodes is not None:   # Node-RED export: function code goes to Dolos, the JSON itself is no text
+            for n in nodes:
+                ids.add(str(n["id"]))
+                text += "".join("\n" + n[k] for k in ("name", "info") if isinstance(n.get(k), str))
+                src = "\n".join(n[k] for k in ("initialize", "func", "finalize") if isinstance(n.get(k), str) and n[k].strip())
+                if not src:
+                    continue
+                norm = re.sub(r"\s+", "", re.sub(r"/\*.*?\*/|//.*", "", src, flags=re.S))   # comments/layout don't count
+                if len(norm) >= 80:
+                    funcs[hashlib.md5(norm.encode()).hexdigest()] = n.get("name") or str(n["id"])
+                p = os.path.join(code_dir, f"{safe(s)}_{len(code)}_{safe(n.get('name') or str(n['id']))}.js")
+                open(p, "w", encoding="utf-8").write(src)
+                code.append(p)
+            continue
         doc = extract(f)
         if os.path.splitext(f)[1].lower() not in CODE_EXT:   # code goes to Dolos
             text += "\n" + doc["text"]
@@ -579,9 +625,10 @@ def load_student(s, files, tmpl, ignore, use_ocr):
              and not (x[1] and len(x[1] & tmpl["grams"]) >= 0.6 * len(x[1]))]
     flags = student_flags(s, meta, ignore) + link_flags(links)
     flags += [f"image looks like a screenshot of an AI chat ({x})" for x in ai_screens]
+    if ids and handmade_ids(ids):
+        flags.append("Node-RED node ids are not random (readable or sequential): flow written or generated, not exported")
     return {"text": text, "sents": sents, "imgs": hashed, "meta": meta, "links": links, "flags": flags,
-            "code": [f for f in files if os.path.splitext(f)[1].lower() in CODE_EXT],
-            "files": [os.path.basename(f) for f in files]}
+            "code": code, "ids": ids, "funcs": funcs, "files": [os.path.basename(f) for f in files]}
 
 def analyse(folder, template=None, jar=None, ignore=(), ignore_images=(), old=(), use_ocr=True, use_embed=True,
             use_dolos=True, history=None, keep_dir=None, exclude=()):
@@ -599,9 +646,13 @@ def analyse(folder, template=None, jar=None, ignore=(), ignore_images=(), old=()
         students.update(collect(o, prefix=os.path.basename(os.path.abspath(o.rstrip("/\\"))) + "/", exclude=exclude))
     old_names = set(students) - current
 
+    # ponytail: without keep_dir the extracted Node-RED code stays in a temp folder
+    code_dir = os.path.join(keep_dir, "nodered") if keep_dir else tempfile.mkdtemp(prefix="fraudecheck-")
+    shutil.rmtree(code_dir, ignore_errors=True)
+    os.makedirs(code_dir, exist_ok=True)   # rmtree fails silently on Windows while the folder is open
     data = {}
     for s, files in students.items():
-        data[s] = load_student(s, files, tmpl, ignore, use_ocr)
+        data[s] = load_student(s, files, tmpl, ignore, use_ocr, code_dir)
         if history is not None and s in current:
             data[s]["flags"] += history_flags(history, s, assignment, data[s]["meta"], ignore)
             history_update(history, s, assignment, data[s]["meta"], ignore)
@@ -624,6 +675,14 @@ def analyse(folder, template=None, jar=None, ignore=(), ignore_images=(), old=()
             continue
         shared_all[frozenset((a, b))] = shared_sentences(data[a]["sents"], data[b]["sents"])
     para = paraphrases(data, current, common_min, {k: set(v) for k, v in shared_all.items()}) if use_embed else {}
+    # node ids and functions in a large part of the class come from a lesson flow
+    id_count = defaultdict(int)
+    fn_count = defaultdict(int)
+    for s in current:
+        for i in data[s]["ids"]:
+            id_count[i] += 1
+        for h in data[s]["funcs"]:
+            fn_count[h] += 1
 
     pairs = []
     for key, shared in shared_all.items():
@@ -653,6 +712,14 @@ def analyse(folder, template=None, jar=None, ignore=(), ignore_images=(), old=()
         if dsim and dsim[0] >= dolos_min:
             score += round(60 * dsim[0])
             reasons.append(f"Dolos: code {dsim[0]:.0%} similar across the project (class threshold {dolos_min:.0%}; mainly {dsim[1]} ~ {dsim[2]})")
+        ids = [i for i in A["ids"] & B["ids"] if id_count[i] < common_min]
+        if len(ids) >= 3:   # random ids only match when one imported the other's flow
+            score += 40
+            reasons.append(f"{len(ids)} identical Node-RED node ids (flow copied from each other)")
+        same = sorted(A["funcs"][h] for h in A["funcs"].keys() & B["funcs"].keys() if fn_count[h] < common_min)
+        if same:
+            score += min(30, 10 * len(same))
+            reasons.append(f"{len(same)} identical function node(s): {', '.join(same[:4])}")
         boards = {miro_board(h) for h, _ in A["links"]} & {miro_board(h) for h, _ in B["links"]} - {None}
         if boards:
             score += 40
@@ -726,7 +793,8 @@ li{{font-size:12px;margin-bottom:4px}}pre{{background:#f4f4f4;padding:8px;overfl
 <p>{len(current)} students{f", compared with {n_old} submissions from earlier years" if n_old else ""}; {len(res["pairs"])} pairs with a signal,
 {len(res["clusters"])} clusters. Ignored as course material (in {res["common_min"]}+ students): {res["common"]["images"]} image(s),
 {res["common"]["sentences"]} sentence(s). Score: image 50, Miro board 40, shared sentence 5 (max 30), paraphrased sentence 4 (max 20),
-JPlag 50×%, Dolos 60×%, same suspicious generator 15 (+10 within {NEAR_MINUTES} min).
+JPlag 50×%, Dolos 60×%, same suspicious generator 15 (+10 within {NEAR_MINUTES} min),
+3+ identical Node-RED node ids 40, identical function node 10 (max 30).
 <b>These are signals, not proof: always check the originals.</b></p>
 <h2>Suspicious pairs</h2><table><tr><th>Score</th><th>Students</th><th>Why</th></tr>{"".join(rows) or "<tr><td colspan=3>none</td></tr>"}</table>
 <h2>Clusters (3+ students sharing the same piece)</h2><table><tr><th>What</th><th>Students</th><th>Example</th></tr>{cl_rows or "<tr><td colspan=3>none</td></tr>"}</table>

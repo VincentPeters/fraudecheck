@@ -20,6 +20,8 @@ Everything runs on your own machine: no student work is sent to an external serv
 | JPlag | text mode, with the template as base code | 50 × % |
 | Dolos | code, similarity across the whole project, only outliers relative to the class | 60 × % |
 | Same suspicious generator | python-docx, headless browser, ... (+10 if created within 60 min) | 15 |
+| Same Node-RED node ids | 3+ identical random node ids: one imported the other's flow | 40 |
+| Identical function node | same Node-RED function code, ignoring comments and layout | 10/node (max 30) |
 
 **Per student** (column *Notable*)
 
@@ -30,6 +32,10 @@ Everything runs on your own machine: no student work is sent to an external serv
 - many words in little editing time (Word keeps track of this: pasted?)
 - an image looks like a screenshot of an AI chat (OCR)
 - a different tool or name in the metadata than in earlier assignments (history)
+- Node-RED node ids that are readable or sequential: the flow was written or generated, not exported
+
+Node-RED exports (`.json`) are recognised: the code of every function node goes to Dolos as a `.js` file
+(kept in `<report>_files/nodered/`), the raw JSON is not compared as text.
 
 **Clusters**: the same piece (image or sentence) in 3+ students.
 Anything that appears in ≥ 15% of the class (min. 4 students) is treated as course material and ignored;

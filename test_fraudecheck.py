@@ -50,6 +50,18 @@ def unique(name, n=3):
     return [f"{name.capitalize()} describes topic number {i} here in their own words about {name}{i}land and {name}{i}town." for i in range(n)]
 
 
+def node(id, type, name="", func=None):
+    n = {"id": id, "type": type, "name": name}
+    if func:
+        n["func"] = func
+    return n
+
+def flow(path, nodes):
+    json.dump(nodes, open(path, "w", encoding="utf-8"))
+
+OWN_FUNC = 'const s = msg.req.headers["x-secret"];\nif (s !== env.get("WEBHOOK_SECRET")) {\n  msg.statusCode = 401;\n  return [null, msg];\n}\nreturn [msg, null];'
+LESSON_FUNC = 'let recent = flow.get("recentEventIds") || [];\nconst id = msg.req.headers["x-event-id"];\nif (recent.includes(id)) { return [null, msg]; }\nrecent.unshift(id);\nflow.set("recentEventIds", recent.slice(0, 50));\nreturn [msg, null];'
+
 def build(root):
     sub, old, tmpl = (os.path.join(root, x) for x in ("submissions", "lastyear", "template"))
     for d in (sub, old, tmpl):
@@ -77,6 +89,16 @@ def build(root):
     for n in ("hans", "ines", "jan"):
         docx(S(n), common + unique(n), [t_img], creator=n, modified_by=n)
     docx(os.path.join(sub, "hans_1_2_feedback.txt"), [])                                     # skipped via exclude
+    # Node-RED: dirk imported anna's flow (same ids, same function), bram wrote his by hand,
+    # the lesson function in 5 students is course material, jan's export is empty
+    copied = [node("3f9a1c22b7e0d451", "tab"), node("8c41e7a0d29b3f16", "http in"),
+              node("b2d07f5e91ac4e38", "function", "Secret check", OWN_FUNC), node("e6a93b1d0f7c2a59", "http response")]
+    flow(os.path.join(sub, "anna_1_3_flows.json"), copied)
+    flow(os.path.join(sub, "dirk_1_3_flows.json"), [dict(n, x=n.get("x", 0) + 40) for n in copied])
+    flow(os.path.join(sub, "bram_1_3_flows.json"), [node(f"a5f100000000000{i}", "function", f"f{i}", "return msg;") for i in range(5)])
+    for k, n in enumerate(("eva", "fien", "gert", "hans", "ines")):
+        flow(os.path.join(sub, f"{n}_1_3_flows.json"), [node(f"{k}1c8e2f09ab7d4{k}6", "function", "Dedup", LESSON_FUNC)])
+    open(os.path.join(sub, "jan_1_3_flows.json"), "w").close()
     docx(os.path.join(old, "zoe_9_9_report.docx"), [anna[2], "Last year Zoe also wrote some other sentences about her own beehive."],
          creator="Zoe", modified_by="Zoe")
     return sub, old, os.path.join(tmpl, "template.docx")
@@ -141,7 +163,12 @@ with tempfile.TemporaryDirectory() as root:
     for a, b in (("hans", "ines"), ("hans", "jan"), ("ines", "jan"), ("anna", "hans")):
         assert frozenset((a, b)) not in P, (a, b, why(a, b))       # template text and image don't count
     assert res["common"]["images"] == 0 and res["common"]["sentences"] == 0   # template already removed via --template
-    assert res["data"]["hans"]["files"] == ["hans_1_2_report.docx"]          # --exclude works
+    assert res["data"]["hans"]["files"] == ["hans_1_2_report.docx", "hans_1_3_flows.json"]   # --exclude works
+    assert "4 identical Node-RED node ids" in why("anna", "dirk") and "identical function node(s): Secret check" in why("anna", "dirk"), why("anna", "dirk")
+    assert "not random" in flags("bram") and "not random" not in flags("anna"), (flags("bram"), flags("anna"))
+    assert len(res["data"]["anna"]["code"]) == 1 and not res["data"]["jan"]["code"]   # function code goes to Dolos
+    assert not fc.handmade_ids({"3f9a1c22b7e0d451", "8c41e7a0.d29b3f", "b2d07f5e91ac4e38"})
+    assert fc.handmade_ids({"ms_tab", "ms_secret", "ms_dedup"})
 
     assert "AI chat" in flags("bram"), flags("bram")
     assert "different tool than before: now python-docx" in flags("bram"), flags("bram")
