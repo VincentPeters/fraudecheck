@@ -44,6 +44,8 @@ the report shows how much was dropped that way.
 ## Installation
 
 ```
+git clone https://github.com/VincentPeters/fraudecheck.git ~/Development/work/fraudecheck
+cd ~/Development/work/fraudecheck
 pip install -r requirements.txt
 ```
 
@@ -58,6 +60,26 @@ Optional (skipped with a message if missing):
 | Dolos (code) | `npm install -g @dodona/dolos` |
 | OCR | Tesseract with the `nld` and `eng` language data (change `OCR_LANGS` for other languages) |
 | Paraphrases | `fastembed` (in requirements.txt); the first run downloads a ~220 MB model from Hugging Face |
+
+## Claude Code skill
+
+The repo ships a [Claude Code](https://claude.com/claude-code) skill in
+[.claude/skills/fraudecheck/](.claude/skills/fraudecheck/SKILL.md). It picks the options, runs the tool and
+summarises the report, without sending student work anywhere.
+
+- **In this repo**: open Claude Code in the repo folder; the skill loads automatically.
+- **Everywhere**: copy it to your personal skills folder:
+
+  ```
+  # macOS / Linux
+  cp -r .claude/skills/fraudecheck ~/.claude/skills/
+  # Windows (PowerShell)
+  Copy-Item -Recurse .claude\skills\fraudecheck "$env:USERPROFILE\.claude\skills\"
+  ```
+
+Then type `/fraudecheck <folder with submissions>`, or just ask Claude to check a folder for copying.
+The skill expects the repo at `~/Development/work/fraudecheck` (the clone command above) and clones it there
+if it's missing.
 
 ## Usage
 
